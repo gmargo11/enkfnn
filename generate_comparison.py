@@ -2,8 +2,8 @@ from signal import signal, SIGINT
 from sys import exit
 
 from nn_utils import predict_nn, set_weights_from_vector, extract_weight_vector, evaluate_performance
-from nn_model import initialize_model_boston_housing, LossHistory
-from enkf_algo_spedup import estimate_weights_enkf
+from nn_model import initialize_model_boston_housing, initialize_model_mnist, initialize_model_cifar, LossHistory
+from enkf_algo_spedup_augmented import estimate_weights_enkf_augmented
 from plotting import TrainingLogger
 
 import sys
@@ -15,7 +15,7 @@ from joblib import Parallel, delayed
 #import dill as pickle
 
 import keras
-from keras.datasets import boston_housing
+from keras.datasets import boston_housing, mnist, cifar10
 from keras import backend as K
 
 import cProfile
@@ -30,10 +30,10 @@ logger = TrainingLogger()
 logger_init = TrainingLogger()
 
 
-def generate_comparison_boston_housing(r, initial_noise, batch_size, num_particles, num_epochs, timesteps):
+def generate_comparison(model, dataset, r, initial_noise, batch_size, num_particles, num_epochs, timesteps):
 
     
-    x_train, y_train, x_test, y_test = load_boston_housing()
+    x_train, y_train, x_test, y_test = dataset #load_boston_housing()
     #x_train = x_train[:1000]
     #y_train = y_train[:1000]
     #x_test = x_test[:1000]
@@ -42,15 +42,14 @@ def generate_comparison_boston_housing(r, initial_noise, batch_size, num_particl
 
     ## Full ENKF Run
 
-    model = initialize_model_boston_housing(input_shape=x_train.shape[1:])
-    
+    #model = initialize_model_boston_housing(input_shape=x_train.shape[1:])
     wvec = extract_weight_vector(model)
     meas_model = lambda wvec, xs: predict_nn(wvec, xs, model)
 
     pretrain_steps = 200
     Ts = [pretrain_steps, timesteps-1]
-    loss_function=None #"mse"
-    As = estimate_weights_enkf(wvec, x_train, y_train, x_test, y_test, dx=0.1, meas_model=meas_model, timesteps=timesteps, num_epochs=num_epochs, ensemble_size=num_particles, batch_size=batch_size, r=r, logger=logger, initial_noise=initial_noise, loss_function=loss_function, Ts=Ts, parallelize=False)
+    loss_function="mse"
+    As = estimate_weights_enkf_augmented(model, wvec, x_train, y_train, x_test, y_test, dx=0.1, meas_model=meas_model, timesteps=timesteps, num_epochs=num_epochs, ensemble_size=num_particles, batch_size=batch_size, r=r, logger=logger, initial_noise=initial_noise, loss_function=loss_function, Ts=Ts, parallelize=False)
 
     A = As[timesteps-1]
 
@@ -95,7 +94,7 @@ def generate_comparison_boston_housing(r, initial_noise, batch_size, num_particl
     ax1.set_ylim([0, 1000])
     ax1.set_ylabel("Mean Squared Error")
 
-    plt.title('Boston Housing Test Error', fontsize=20)
+    plt.title('Test Error', fontsize=20)
     plt.savefig('test-acc-enkf.png', format='png', dpi=1200)
 
 
@@ -103,7 +102,7 @@ def generate_comparison_boston_housing(r, initial_noise, batch_size, num_particl
     logger.plot_eigenvals(ax=ax2)
     ax1.set_xlabel("# weight updates")
     ax1.set_ylabel("Eigenvalue magnitude")
-    plt.title("Boston Housing Eigenvalues of Prediction Covariance")
+    plt.title("Eigenvalues of Prediction Covariance")
     plt.savefig('eigenvals-enkf.png', format='png', dpi=1200)
 
     #plt.show()
@@ -136,33 +135,52 @@ def train_backprop_from_init(x_train, y_train, x_test, y_test, num_epochs, batch
 
 
 
-def load_boston_housing():
-    num_classes = 10
+def load_dataset(dataset_name):
+
+    # input image dimensions
+    img_rows, img_cols = 28, 28
 
     # the data, split between train and test sets
-    (x_train, y_train), (x_test, y_test) = boston_housing.load_data()
+    if dataset_name == "boston_housing":
+        (x_train, y_train), (x_test, y_test) = boston_housing.load_data()
+    if dataset_name == "mnist":
+        (x_train, y_train), (x_test, y_test) = mnist.load_data()
+    if dataset_name == "cifar10":
+        (x_train, y_train), (x_test, y_test) = cifar10.load_data()
 
+    if dataset_name == "mnist":
+        if K.image_data_format() == 'channels_first':
+            x_train = x_train.reshape(x_train.shape[0], 1, img_rows, img_cols)
+            x_test = x_test.reshape(x_test.shape[0], 1, img_rows, img_cols)
+            input_shape = (1, img_rows, img_cols)
+        else:
+            x_train = x_train.reshape(x_train.shape[0], img_rows, img_cols, 1)
+            x_test = x_test.reshape(x_test.shape[0], img_rows, img_cols, 1)
+            input_shape = (img_rows, img_cols, 1)
 
     x_train = x_train.astype('float32')
     x_test = x_test.astype('float32')
+
+    if dataset_name == "mnist" or dataset_name == "cifar10":
+        num_classes = 10
+        x_train /= 255
+        x_test /= 255
+        # convert class vectors to binary class matrices
+        y_train = keras.utils.to_categorical(y_train, num_classes)
+        y_test = keras.utils.to_categorical(y_test, num_classes)
+
+    if dataset_name == "boston_housing":
+        # normalize inputs
+        means = np.mean(x_train, axis=0)
+        stds = np.std(x_train, axis=0)
+        x_train = (x_train - means) / stds
+        x_test = (x_test - means) / stds
+
     print('x_train shape:', x_train.shape)
     print(x_train.shape[0], 'train samples')
     print(x_test.shape[0], 'test samples')
 
-    means = np.mean(x_train, axis=0)
-    stds = np.std(x_train, axis=0)
-
-    x_train = (x_train - means) / stds
-    x_test = (x_test - means) / stds
-
-    print(x_train[0, :])
-
-    # convert class vectors to binary class matrices
-    #y_train = keras.utils.to_categorical(y_train, num_classes)
-    #y_test = keras.utils.to_categorical(y_test, num_classes)
-
     return x_train, y_train, x_test, y_test
-
 
 def parse_args(args):
     # default parameters
@@ -172,8 +190,10 @@ def parse_args(args):
     num_particles=200
     num_epochs=5
     timesteps=1001
+    model_name = "fcn"
+    dataset_name = "boston_housing"
 
-
+    # parse args
     for arg in args:
         if "=" in arg:
             tag = arg.split("=")[0]
@@ -184,8 +204,23 @@ def parse_args(args):
             if tag == "--num_particles": num_particles = int(value)
             if tag == "--num_epochs": num_epochs = int(value)
             if tag == "--timesteps": timesteps = int(value)
+            if tag == "--model": model_name = value
+            if tag == "--dataset": dataset_name = value
 
-    return r, initial_noise, batch_size, num_particles, num_epochs, timesteps
+    # initialize model
+    if model_name == "fcn": model = initialize_model_boston_housing()
+    elif model_name == "convnet": model = initialize_model_mnist()
+    elif model_name == "resnet": model = initialize_model_cifar()
+    else:
+        print("Model {} is not available! Available models: fcn, convnet, resnet".format(model_name))
+
+    # load dataset
+    if dataset_name in ["boston_housing", "mnist", "cifar10"]:
+        dataset = load_dataset(dataset_name)
+    else:
+        print("Dataset {} is not available! Available datasets: boston_housing, mnist, cifar10".format(dataset_name))
+
+    return model, dataset, r, initial_noise, batch_size, num_particles, num_epochs, timesteps
 
 def handler(signal_received, frame):
     # Handle any cleanup here
@@ -206,9 +241,9 @@ def main(args):
 
     np.random.seed(1)
 
-    r, initial_noise, batch_size, num_particles, num_epochs, timesteps = parse_args(args)
+    model, dataset, r, initial_noise, batch_size, num_particles, num_epochs, timesteps = parse_args(args)
 
-    generate_comparison_boston_housing(r=r, initial_noise=initial_noise, batch_size=batch_size, num_particles=num_particles, num_epochs=num_epochs, timesteps=timesteps)
+    generate_comparison(model=model, dataset=dataset, r=r, initial_noise=initial_noise, batch_size=batch_size, num_particles=num_particles, num_epochs=num_epochs, timesteps=timesteps)
 
     pr.disable()
     p = pstats.Stats(pr)

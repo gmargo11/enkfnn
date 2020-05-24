@@ -35,6 +35,9 @@ class LossHistory(keras.callbacks.Callback):
         #print(logs.get('accuracy'))
 
 def initialize_model(input_shape=(28, 28, 1)):
+    return initialize_model_mnist(input_shape)
+
+def initialize_model_mnist(input_shape=(28, 28, 1)):
     num_classes = 10
 
     model = Sequential()
